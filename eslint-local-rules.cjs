@@ -1,6 +1,5 @@
 'use strict';
-
-module.exports = {
+module.exports = { 
   'ban-foreach': {
     meta: {
       type: 'suggestion',
