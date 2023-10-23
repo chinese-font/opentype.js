@@ -5,6 +5,7 @@
         "name": "Frederik De Bleser",
         "email": "frederik@debleser.be"
     },
+    "type": "module",
     "keywords": [
         "graphics",
         "fonts",
