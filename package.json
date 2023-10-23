@@ -1,5 +1,5 @@
 {
-  "name": "opentype.js",
+  "name": "@konghayao/opentype.js",
   "description": "OpenType font parser",
   "author": {
     "name": "Frederik De Bleser",
@@ -45,7 +45,8 @@
     "ot": "./bin/ot"
   },
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "sideEffects": false,
   "eslintConfig": {
