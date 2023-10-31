@@ -46,7 +46,8 @@
         "ot": "./bin/ot"
     },
     "files": [
-        "dist"
+        "dist",
+        "src"
     ],
     "sideEffects": false,
     "eslintConfig": {
