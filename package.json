@@ -19,7 +19,7 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "git://github.com/opentypejs/opentype.js.git"
+        "url": "git://github.com/chinese-font/opentype.js.git"
     },
     "main": "/dist/opentype.module.js",
     "browser": "/dist/opentype.module.js",
