@@ -10,7 +10,7 @@ import { isBrowser, checkArgument } from './util.js';
 import HintingTrueType from './hintingtt.js';
 import Bidi from './bidi.js';
 import { applyPaintType } from './tables/cff.js';
-import { mark } from './features/positioning/mark.js'
+import { mark } from './features/positioning/mark.js';
 import { kern } from './features/positioning/kern.js';
 function createDefaultNamesInfo(options) {
     return {
