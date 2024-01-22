@@ -66,9 +66,10 @@ describe('opentype.js', function() {
         assert.equal(font.unitsPerEm, 1000);
         assert.equal(font.glyphs.length, 257);
         const aGlyph = font.glyphs.get(2);
-        assert.equal(aGlyph.name, 'gid2');
+        assert.equal(aGlyph.name, 'cid00002');
         assert.equal(aGlyph.unicode, 1);
         assert.equal(aGlyph.path.commands.length, 24);
+        assert.deepEqual(font.stringToGlyphIndexes('🌺'), [59]);
     });
 
     it('can load a WOFF/CFF font', function() {
@@ -155,9 +156,10 @@ describe('opentype.js on low memory mode', function() {
         assert.equal(font.unitsPerEm, 1000);
         assert.equal(font.glyphs.length, 0);
         const aGlyph = font.glyphs.get(2);
-        assert.equal(aGlyph.name, 'gid2');
+        assert.equal(aGlyph.name, 'cid00002');
         assert.equal(aGlyph.unicode, 1);
         assert.equal(aGlyph.path.commands.length, 24);
+        assert.deepEqual(font.stringToGlyphIndexes('🌺'), [59]);
     });
 
     it('can load a WOFF/CFF font', function() {
