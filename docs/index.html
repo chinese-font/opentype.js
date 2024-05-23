@@ -4,6 +4,7 @@
 <meta name="description" content="A JavaScript library to manipulate the letterforms of text from the browser or node.js.">
 <meta charset="utf-8">
 <link rel="stylesheet" href="site.css">
+<script src="site.js"></script>
 
 <div class="header">
     <div class="container">
@@ -35,7 +36,9 @@
     <label><input type="checkbox" name="drawMetrics">Draw Metrics</label>
     <label><input type="checkbox" name="kerning" checked="checked">Kerning</label>
     <label><input type="checkbox" name="ligatures" checked="checked">Ligatures</label>
-    <label class="disabled"><input name="hinting" type="checkbox" onchange="hintingChanged(this)" disabled="true">Hinting</label>
+    <label class="disabled"><input name="hinting" type="checkbox" disabled="true">Hinting</label>
+
+    <div id="variation-options"></div>
 
     <hr>
 
@@ -46,8 +49,8 @@
     <canvas id="snap" width="940" height="300" class="text"></canvas>
     <label>Strength <input type="range" min="0" max="100" value="80" name="snapStrength" oninput="nextElementSibling.innerText=value"/><output>80</output></label>
     <label>Distance<input type="range" min="1" max="100" value="53" name="snapDistance" oninput="nextElementSibling.innerText=value"/><output>53</output></label>
-    <label>X<input type="range" min="-100" max="100" value="0" name="snapX" oninput="snextElementSibling.innerText=value"/><output>0</output></label>
-    <label>Y<input type="range" min="-100" max="100" value="0" name="snapY" oninput="snextElementSibling.innerText=value"/><output>0</output></label>
+    <label>X<input type="range" min="-100" max="100" value="0" name="snapX" oninput="nextElementSibling.innerText=value"/><output>0</output></label>
+    <label>Y<input type="range" min="-100" max="100" value="0" name="snapY" oninput="nextElementSibling.innerText=value"/><output>0</output></label>
 
     <hr>
 
@@ -79,8 +82,16 @@ const form = document.forms.demo;
 form.oninput = renderText;
 let font = null;
 
+let options = {};
 
 function doSnap(path) {
+    const layers = path._layers;
+    if ( layers && layers.length ) {
+        for( let l = 0; l < layers.length; l++ ) {
+            doSnap(layers[l]);
+        }
+        return;
+    }
     // Round a value to the nearest "step".
     const snap = (v, distance, strength) => (v * (1.0 - strength)) + (strength * Math.round(v / distance) * distance);
     const strength = +form.snapStrength.value / 100.0;
@@ -107,16 +118,10 @@ function doSnap(path) {
 function renderText() {
     const font = window.font;
     if (!font) return;
-    const textToRender = form.textField.value;
+    const textToRender = conditionalSampleText(font, form.textField.value);
+
     var previewCtx = document.getElementById('preview').getContext('2d');
-    var options = {
-        kerning: form.kerning.checked,
-        hinting: form.hinting.checked,
-        features: {
-            liga: form.ligatures.checked,
-            rlig: form.ligatures.checked
-        }
-    };
+    var options = Object.assign({}, font.defaultRenderOptions, getDrawOptions());
     previewCtx.clearRect(0, 0, 940, 300);
     const fontSize = +form.fontsize.value;
     font.draw(previewCtx, textToRender, 0, 200, fontSize, options);
@@ -133,6 +138,29 @@ function renderText() {
     snapCtx.clearRect(0, 0, 940, 300);
     snapPath.draw(snapCtx);
 }
+
+function getDrawOptions() {
+    const options = {
+        kerning: form.kerning.checked,
+        hinting: form.hinting.checked,
+        features: {
+            liga: form.ligatures.checked,
+            rlig: form.ligatures.checked
+        }
+    };
+    window.fontOptions = Object.assign({}, window.font.defaultRenderOptions, window.fontOptions, options);
+    return window.fontOptions;
+}
+
+window.redraw = function(options = { withColors: true, withVariations: true }) {
+    if ( options.withVariations ) {
+        updateVariationOptions();
+    }
+};
+
+window.throttledRedraw = throttleDebounce((...args) => {
+    window.redraw(...args);
+}, 50);
 
 function enableHighDPICanvas(canvas) {
     if (typeof canvas === 'string') {
@@ -176,7 +204,14 @@ function showErrorMessage(message) {
 }
 
 function onFontLoaded(font) {
+    if (window.font) {
+        window.font.onGlyphUpdated = null
+    }
     window.font = font;
+    options = Object.assign({}, window.font.defaultRenderOptions);
+    window.fontOptions = options;
+    
+    updateVariationOptions();
 
     // Show the first 100 glyphs.
     const glyphsDiv = document.getElementById('glyphs');
@@ -186,10 +221,12 @@ function onFontLoaded(font) {
     const x = 50;
     const y = 120;
     const fontSize = 72;
+    const ctxs = new Array(amount);
     for (let i = 0; i < amount; i++) {
         const glyph = font.glyphs.get(i);
         const ctx = createGlyphCanvas(glyph, 150);
-        glyph.draw(ctx, x, y, fontSize);
+        ctxs[i] = ctx;
+        glyph.draw(ctx, x, y, fontSize, {}, font);
         glyph.drawPoints(ctx, x, y, fontSize);
         glyph.drawMetrics(ctx, x, y, fontSize);
     }
@@ -206,6 +243,22 @@ function onFontLoaded(font) {
     }
 
     renderText();
+
+    font.onGlyphUpdated = (glyphId) => {
+        if (0 <= glyphId && glyphId < amount) {
+            const glyph = font.glyphs.get(glyphId);
+            const ctx = ctxs[glyphId];
+            glyph.draw(ctx, x, y, fontSize, {}, font);
+            glyph.drawPoints(ctx, x, y, fontSize);
+            glyph.drawMetrics(ctx, x, y, fontSize);
+        }
+
+        const textToRender = form.textField.value;
+        const glyphIds = font.stringToGlyphIndexes(textToRender, getDrawOptions());
+        if (glyphIds.includes(glyphId)) {
+            renderText();
+        }
+    };
 }
 const loadScript = (src) => new Promise((onload) => document.head.append(Object.assign(document.createElement('script'), {src, onload})));
 async function display(file, name) {
@@ -217,8 +270,17 @@ async function display(file, name) {
     }
     try {
         const data = await file.arrayBuffer();
-        onFontLoaded(opentype.parse(isWoff2 ? Module.decompress(data) : data));
-        showErrorMessage('');
+        let error;
+        try {
+            const base64String = arrayBufferToBase64(data);
+            sessionStorage.setItem('fontData', base64String);
+        } catch (err) {
+            showErrorMessage('Error loading font from localStorage');
+            error = err;
+        }     
+
+        onFontLoaded(opentype.parse(isWoff2 ? Module.decompress(data) : data, { lowMemory: true }));
+        if ( !error ) showErrorMessage('');
     } catch (err) {
         showErrorMessage(err.toString());
     }
@@ -231,6 +293,12 @@ form.file.onchange = function(e) {
 enableHighDPICanvas('preview');
 enableHighDPICanvas('snap');
 
-const fontFileName = 'fonts/FiraSansMedium.woff';
-display(await fetch(fontFileName), fontFileName);
+const fontData = sessionStorage.getItem('fontData');
+if ( fontData ) {
+    const arrayBuffer = base64ToArrayBuffer(fontData);
+    onFontLoaded(opentype.parse(arrayBuffer));
+} else {
+    const fontFileName = 'fonts/FiraSansMedium.woff';
+    display(await fetch(fontFileName), fontFileName);
+}
 </script>

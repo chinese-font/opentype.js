@@ -14,6 +14,8 @@ function Path() {
     this.fill = 'black';
     this.stroke = null;
     this.strokeWidth = 1;
+    // the _layer property is only set on computed paths during glyph rendering
+    // this._layers = [];
 }
 
 const decimalRoundingCache = {};
@@ -40,14 +42,27 @@ function roundDecimal(float, places) {
 function optimizeCommands(commands) {
     // separate subpaths
     let subpaths = [[]];
+    let startX = 0,
+        startY = 0;
     for (let i = 0; i < commands.length; i += 1) {
         const subpath = subpaths[subpaths.length - 1];
         const cmd = commands[i];
         const firstCommand = subpath[0];
         const secondCommand = subpath[1];
         const previousCommand = subpath[subpath.length - 1];
+        const nextCommand = commands[i + 1];
         subpath.push(cmd);
-        if (cmd.type === 'Z') {
+        
+        if (cmd.type === 'M') {
+            startX = cmd.x;
+            startY = cmd.y;
+        } else if (cmd.type === 'L' && (!nextCommand || nextCommand.command === 'Z')) {
+            if(!(Math.abs(cmd.x - startX) > 1 || Math.abs(cmd.y - startY) > 1)) {
+                subpath.pop();
+            }
+        } else if (cmd.type === 'L' && previousCommand && previousCommand.x === cmd.x && previousCommand.y === cmd.y) {
+            subpath.pop();
+        } else if (cmd.type === 'Z') {
             // When closing at the same position as the path started,
             // remove unnecessary line command
             if (
@@ -66,11 +81,6 @@ function optimizeCommands(commands) {
 
             if (i + 1 < commands.length) {
                 subpaths.push([]);
-            }
-        } else if (cmd.type === 'L') {
-            // remove lines that lead to the same position as the previous command
-            if (previousCommand && previousCommand.x === cmd.x && previousCommand.y === cmd.y) {
-                subpath.pop();
             }
         }
     }
@@ -503,6 +513,20 @@ Path.prototype.getBoundingBox = function() {
  * @param {CanvasRenderingContext2D} ctx - A 2D drawing context.
  */
 Path.prototype.draw = function(ctx) {
+    const layers = this._layers;
+    if ( layers && layers.length ) {
+        for ( let l = 0; l < layers.length; l++ ) {
+            this.draw.call(layers[l], ctx);
+        }
+        return;
+    }
+
+    const image = this._image;
+    if ( image ) {
+        ctx.drawImage(image.image, image.x, image.y, image.width, image.height);
+        return;
+    }
+
     ctx.beginPath();
     for (let i = 0; i < this.commands.length; i += 1) {
         const cmd = this.commands[i];
@@ -514,7 +538,7 @@ Path.prototype.draw = function(ctx) {
             ctx.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y);
         } else if (cmd.type === 'Q') {
             ctx.quadraticCurveTo(cmd.x1, cmd.y1, cmd.x, cmd.y);
-        } else if (cmd.type === 'Z') {
+        } else if (cmd.type === 'Z' && this.stroke && this.strokeWidth) {
             ctx.closePath();
         }
     }
@@ -623,6 +647,21 @@ Path.prototype.toPathData = function(options) {
  * @return {string}
  */
 Path.prototype.toSVG = function(options, pathData) {
+    if (this._layers && this._layers.length) {
+        /** @TODO: implement SVG output for colr fonts
+         * Is there a standardized way?
+         * @see https://github.com/unicode-org/text-rendering-tests/issues/95
+        */
+        console.warn('toSVG() does not support colr font layers yet');
+    }
+    if (this._image) {
+        /**
+         * @TODO: implement SVG output for SVG glyphs
+         * We can't simply output the whole SVG document as it is, we should first sanitize it
+         * to make sure it doesn't contain any malicious scripts or features not supported in SVG fonts.
+         */
+        console.warn('toSVG() does not support SVG glyphs yet');
+    }
     if (!pathData) {
         pathData = this.toPathData(options);
     }
@@ -652,6 +691,13 @@ Path.prototype.toSVG = function(options, pathData) {
  * @return {SVGPathElement}
  */
 Path.prototype.toDOMElement = function(options, pathData) {
+    if(this._layers && this._layers.length) {
+        /** @TODO: implement SVG output for colr fonts
+         * Is there a standardized way?
+         * @see https://github.com/unicode-org/text-rendering-tests/issues/95
+        */
+        console.warn('toDOMElement() does not support colr font layers yet');
+    }
     if (!pathData) {
         pathData = this.toPathData(options);
     }

@@ -3,6 +3,7 @@
 import check from './check.js';
 import draw from './draw.js';
 import Path from './path.js';
+import { getPaletteColor, formatColor } from './tables/cpal.js';
 // import glyf from './tables/glyf' Can't be imported here, because it's a circular dependency
 
 function getPathDefinition(glyph, path) {
@@ -102,6 +103,10 @@ Glyph.prototype.bindConstructorValues = function(options) {
         this.leftSideBearing = options.leftSideBearing;
     }
 
+    if ('points' in options) {
+        this.points = options.points;
+    }
+
     // The path for a glyph is the most memory intensive, and is bound as a value
     // with a getter/setter to ensure we actually do path parsing only once the
     // path is actually needed by anything.
@@ -132,25 +137,32 @@ Glyph.prototype.getBoundingBox = function() {
  * @param  {number} [x=0] - Horizontal position of the beginning of the text.
  * @param  {number} [y=0] - Vertical position of the *baseline* of the text.
  * @param  {number} [fontSize=72] - Font size in pixels. We scale the glyph units by `1 / unitsPerEm * fontSize`.
- * @param  {Object=} options - xScale, yScale to stretch the glyph.
- * @param  {opentype.Font} if hinting is to be used, the font
+ * @param  {GlyphRenderOptions=} options - xScale, yScale to stretch the glyph.
+ * @param  {opentype.Font} font if hinting is to be used, or CPAL/COLR / variation needs to be rendered, the font
  * @return {opentype.Path}
  */
 Glyph.prototype.getPath = function(x, y, fontSize, options, font) {
     x = x !== undefined ? x : 0;
     y = y !== undefined ? y : 0;
     fontSize = fontSize !== undefined ? fontSize : 72;
+    options = Object.assign({}, font && font.defaultRenderOptions, options);
     let commands;
     let hPoints;
-    if (!options) options = { };
     let xScale = options.xScale;
     let yScale = options.yScale;
     const scale = 1 / (this.path.unitsPerEm || 1000) * fontSize;
 
+    let useGlyph = this;
+
+    if(font && font.variation) {
+        useGlyph = font.variation.getTransform(this, options.variation);
+        commands = useGlyph.path.commands;
+    }
+    
     if (options.hinting && font && font.hinting) {
         // in case of hinting, the hinting engine takes care
         // of scaling the points (not the path) before hinting.
-        hPoints = this.path && font.hinting.exec(this, fontSize);
+        hPoints = useGlyph.path && font.hinting.exec(useGlyph, fontSize, options);
         // in case the hinting engine failed hPoints is undefined
         // and thus reverts to plain rending
     }
@@ -163,13 +175,48 @@ Glyph.prototype.getPath = function(x, y, fontSize, options, font) {
         // TODO in case of hinting xyScaling is not yet supported
         xScale = yScale = 1;
     } else {
-        commands = this.path.commands;
+        commands = useGlyph.path.commands;
         if (xScale === undefined) xScale = scale;
         if (yScale === undefined) yScale = scale;
     }
-
+    
     const p = new Path();
-    p.fill = this.path.fill;
+    if ( options.drawSVG ) {
+        const svgImage = this.getSvgImage(font);
+        if ( svgImage ) {
+            const layer = new Path();
+            layer._image = {
+                image: svgImage.image,
+                x: x + svgImage.leftSideBearing * scale,
+                y: y - svgImage.baseline * scale,
+                width: svgImage.image.width * scale,
+                height: svgImage.image.height * scale,
+            };
+            p._layers = [layer];
+            return p;
+        }
+    }
+    if ( options.drawLayers ) {
+        const layers = this.getLayers(font);
+        if ( layers && layers.length ) {
+            p._layers = [];
+            for ( let i = 0; i < layers.length; i += 1 ) {
+                const layer = layers[i];
+                let color = getPaletteColor(font, layer.paletteIndex, options.usePalette);
+                
+                if ( color === 'currentColor' ) {
+                    color = options.fill || 'black'; 
+                } else {
+                    color = formatColor(color, options.colorFormat || 'rgba');
+                }
+                options = Object.assign({}, options, {fill: color});
+                p._layers.push(this.getPath.call(layer.glyph, x, y, fontSize, options, font));
+            }
+            return p;
+        }
+    }
+
+    p.fill = options.fill || this.path.fill;
     p.stroke = this.path.stroke;
     p.strokeWidth = this.path.strokeWidth * scale;
     for (let i = 0; i < commands.length; i += 1) {
@@ -185,7 +232,7 @@ Glyph.prototype.getPath = function(x, y, fontSize, options, font) {
             p.curveTo(x + (cmd.x1 * xScale), y + (-cmd.y1 * yScale),
                 x + (cmd.x2 * xScale), y + (-cmd.y2 * yScale),
                 x + (cmd.x * xScale), y + (-cmd.y * yScale));
-        } else if (cmd.type === 'Z') {
+        } else if (cmd.type === 'Z' && p.stroke && p.strokeWidth) {
             p.closePath();
         }
     }
@@ -194,20 +241,47 @@ Glyph.prototype.getPath = function(x, y, fontSize, options, font) {
 };
 
 /**
+ * 
+ * @param {opentype.Font} font 
+ * @returns {Array}
+ */
+Glyph.prototype.getLayers = function(font) {
+    if(!font) {
+        throw Error('The font object is required to read the colr/cpal tables in order to get the layers.');
+    }
+    return font.layers.get(this.index);
+};
+
+/**
+ * @param {opentype.Font} font
+ * @returns {import('./svgimages.js').SVGImage | undefined}
+ */
+Glyph.prototype.getSvgImage = function(font) {
+    if(!font) {
+        throw Error('The font object is required to read the svg table in order to get the image.');
+    }
+    return font.svgImages.get(this.index);
+};
+
+/**
  * Split the glyph into contours.
  * This function is here for backwards compatibility, and to
  * provide raw access to the TrueType glyph outlines.
+ * @param {Array|null} [transformedPoints=null] Use the supplied transformed points from a glyph variation instead of the regular glyph points
  * @return {Array}
  */
-Glyph.prototype.getContours = function() {
-    if (this.points === undefined) {
+Glyph.prototype.getContours = function(transformedPoints = null) {
+    if (this.points === undefined && !transformedPoints) {
         return [];
     }
 
     const contours = [];
     let currentContour = [];
-    for (let i = 0; i < this.points.length; i += 1) {
-        const pt = this.points[i];
+
+    let points = transformedPoints ? transformedPoints : this.points;
+
+    for (let i = 0; i < points.length; i += 1) {
+        const pt = points[i];
         currentContour.push(pt);
         if (pt.lastPointOfContour) {
             contours.push(currentContour);
@@ -280,9 +354,12 @@ Glyph.prototype.getMetrics = function() {
  * @param  {number} [y=0] - Vertical position of the *baseline* of the text.
  * @param  {number} [fontSize=72] - Font size in pixels. We scale the glyph units by `1 / unitsPerEm * fontSize`.
  * @param  {Object=} options - xScale, yScale to stretch the glyph.
+ * @param  {opentype.Font} font - if hinting is to be used, or CPAL/COLR / variation needs to be rendered, the font
  */
-Glyph.prototype.draw = function(ctx, x, y, fontSize, options) {
-    this.getPath(x, y, fontSize, options).draw(ctx);
+Glyph.prototype.draw = function(ctx, x, y, fontSize, options, font) {
+    options = Object.assign({}, font.defaultRenderOptions, options);
+    const path = this.getPath(x, y, fontSize, options, font);
+    path.draw(ctx);
 };
 
 /**
@@ -292,16 +369,30 @@ Glyph.prototype.draw = function(ctx, x, y, fontSize, options) {
  * @param  {number} [x=0] - Horizontal position of the beginning of the text.
  * @param  {number} [y=0] - Vertical position of the *baseline* of the text.
  * @param  {number} [fontSize=72] - Font size in pixels. We scale the glyph units by `1 / unitsPerEm * fontSize`.
+ * @param  {GlyphRenderOptions=} options
+ * @param  {opentype.Font} font - used to get the default render options, may be needed for variable fonts in the future
  */
-Glyph.prototype.drawPoints = function(ctx, x, y, fontSize) {
+Glyph.prototype.drawPoints = function(ctx, x, y, fontSize, options, font) {
+    options = Object.assign({}, font && font.defaultRenderOptions, options);
+    if ( options.drawLayers ) {
+        const layers = this.getLayers(font);
+        if ( layers && layers.length ) {
+            for ( let l = 0; l < layers.length; l += 1 ) {
+                // prevent endless loop: ignore layers with own glyph id
+                if(layers[l].glyph.index !== this.index) {
+                    this.drawPoints.call(layers[l].glyph, ctx, x, y, fontSize);
+                }
+            }
+            return;
+        }
+    }
+
     function drawCircles(l, x, y, scale) {
         ctx.beginPath();
         for (let j = 0; j < l.length; j += 1) {
             ctx.moveTo(x + (l[j].x * scale), y + (l[j].y * scale));
             ctx.arc(x + (l[j].x * scale), y + (l[j].y * scale), 2, 0, Math.PI * 2, false);
         }
-
-        ctx.closePath();
         ctx.fill();
     }
 
@@ -313,8 +404,14 @@ Glyph.prototype.drawPoints = function(ctx, x, y, fontSize) {
     const blueCircles = [];
     const redCircles = [];
     const path = this.path;
-    for (let i = 0; i < path.commands.length; i += 1) {
-        const cmd = path.commands[i];
+    let commands = path.commands;
+    
+    if(font && font.variation) {
+        commands = font.variation.getTransform(this, options.variation).path.commands;
+    }
+
+    for (let i = 0; i < commands.length; i += 1) {
+        const cmd = commands[i];
         if (cmd.x !== undefined) {
             blueCircles.push({x: cmd.x, y: -cmd.y});
         }
@@ -379,12 +476,24 @@ Glyph.prototype.drawMetrics = function(ctx, x, y, fontSize) {
 
 /**
  * Convert the Glyph's Path to a string of path data instructions
- * @param  {object|number} [options={decimalPlaces:2, optimize:true}] - Options object (or amount of decimal places for floating-point values for backwards compatibility)
+ * @param  {object|number} [options={decimalPlaces:2, optimize:true, variation:undefined}] - Options object (or amount of decimal places for floating-point values for backwards compatibility)
+ * @param  {opentype.Font} font - A font object is required if variation is to be applied in order to get the variation data from the tables
  * @return {string}
  * @see Path.toPathData
  */
-Glyph.prototype.toPathData = function(options) {
-    return this.path.toPathData(options);
+Glyph.prototype.toPathData = function(options, font) {
+    options = Object.assign({}, { variation: font && font.defaultRenderOptions.variation }, options);
+    let useGlyph = this;
+    if(font && font.variation) {
+        useGlyph = font.variation.getTransform(this, options.variation);
+    }
+
+    let usePath = useGlyph.points && options.pointsTransform ? options.pointsTransform(useGlyph.points) : useGlyph.path;
+    if(options.pathTramsform) {
+        usePath = options.pathTramsform(usePath);
+    }
+
+    return usePath.toPathData(options);
 };
 
 /**
@@ -398,20 +507,29 @@ Glyph.prototype.fromSVG = function(pathData, options = {}) {
 
 /**
  * Convert the Glyph's Path to an SVG <path> element, as a string.
- * @param  {object|number} [options={decimalPlaces:2, optimize:true}] - Options object (or amount of decimal places for floating-point values for backwards compatibility)
+ * @param  {object|number} [options={decimalPlaces:2, optimize:true, variation:undefined}] - Options object (or amount of decimal places for floating-point values for backwards compatibility)
+ * @param  {opentype.Font} font - A font object is required if variation is to be applied in order to get the variation data from the tables 
  * @return {string}
  */
-Glyph.prototype.toSVG = function(options) {
-    return this.path.toSVG(options, this.toPathData.apply(this, [options]));
+Glyph.prototype.toSVG = function(options, font) {
+    const pathData = this.toPathData.apply(this, [options, font]);
+    return this.path.toSVG(options, pathData);
 };
 
 /**
  * Convert the path to a DOM element.
- * @param  {object|number} [options={decimalPlaces:2, optimize:true}] - Options object (or amount of decimal places for floating-point values for backwards compatibility)
+ * @param  {object|number} [options={decimalPlaces:2, optimize:true, variation:undefined}] - Options object (or amount of decimal places for floating-point values for backwards compatibility)
+ * @param  {opentype.Font} font - A font object is required if variation is to be applied in order to get the variation data from the tables 
  * @return {SVGPathElement}
  */
-Glyph.prototype.toDOMElement = function(options) {
-    return this.path.toDOMElement(options);
+Glyph.prototype.toDOMElement = function(options, font) {
+    options = Object.assign({}, { variation: font && font.defaultRenderOptions.variation }, options);
+
+    let usePath = this.path;
+    if(font && font.variation) {
+        usePath = font.variation.getTransform(this, options.variation).path;
+    }
+    return usePath.toDOMElement(options);
 };
 
 export default Glyph;

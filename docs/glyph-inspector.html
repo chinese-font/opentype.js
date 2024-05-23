@@ -4,6 +4,7 @@
 <meta name="description" content="A JavaScript library to manipulate the letterforms of text from the browser or node.js.">
 <meta charset="utf-8">
 <link rel="stylesheet" href="site.css">
+<script src="site.js"></script>
 
 <div class="header">
     <div class="container">
@@ -32,6 +33,12 @@
     <hr>
 
     <div>
+        <div id="variation-options"></div>
+        <div id="colr-cpal-options" style="display:none">
+            <label><input type="checkbox" name="drawLayers" oninput="window.fontOptions.drawLayers = this.checked; window.redraw();"> options.drawLayers</label><br>
+            <div id="palettes"></div>
+            <hr>
+        </div>
         Glyphs <span id="pagination"></span>
         <br>
         <div id="glyph-list-end"></div>
@@ -47,6 +54,10 @@
 
     <hr>
 
+    <button type="button" onclick="window.redraw()">update</button> after modifying window.font
+
+    <hr>
+
     <div class="explain">
         <h1>Free Software</h1>
         <p>opentype.js is available on <a href="https://github.com/opentypejs/opentype.js">GitHub</a> under the <a href="https://raw.github.com/opentypejs/opentype.js/master/LICENSE">MIT License</a>.</p>
@@ -59,6 +70,8 @@
 
 <script type="module">
 import * as opentype from "/dist/opentype.module.js";
+
+window.opentype = opentype;
 
 const form = document.forms.demo;
 
@@ -149,7 +162,7 @@ function displayGlyphData(glyphIndex) {
     }
     html += '</dl>';
     if (glyph.numberOfContours > 0) {
-        var contours = glyph.getContours();
+        var contours = glyph.getContours(window.font.variation.getTransform(glyph, window.fontOptions.variation).points);
         html += 'contours:<div id="glyph-contours">' + contours.map(contourToString).join('\n') + '</div>';
     } else if (glyph.isComposite) {
         html += '<br>This composite glyph is a combination of :<ul><li>' +
@@ -163,11 +176,28 @@ function displayGlyphData(glyphIndex) {
     } else if (glyph.path) {
         html += 'path:<br><pre>  ' + glyph.path.commands.map(pathCommandToString).join('\n  ') + '\n</pre>';
     }
+
+    const layers = glyph.getLayers(font);
+    if(layers.length) {
+        html += 'layers:<div id="layers">';
+        for(let l = 0; l < layers.length; l++) {
+            html += `<canvas id="layer-${l}" class="item" width="${cellWidth}" height="${cellHeight}" title="paletteIndex: ${layers[l].paletteIndex}"></canvas></li>`;
+        }
+        html += '</div>';
+    }
+
     container.innerHTML = html;
+
+    for(let l = 0; l < layers.length; l++) {
+        const canvas = document.getElementById(`layer-${l}`);
+        enableHighDPICanvas(canvas);
+        renderGlyphItem(canvas, layers[l].glyph.index, `${l}: `, layers[l].paletteIndex);
+    }
 }
 
 var arrowLength = 10,
-    arrowAperture = 4;
+    arrowAperture = 4,
+    options = {};
 
 function drawArrow(ctx, x1, y1, x2, y2) {
     var dx = x2 - x1,
@@ -184,7 +214,6 @@ function drawArrow(ctx, x1, y1, x2, y2) {
     ctx.lineTo(basex + normalx, basey + normaly);
     ctx.lineTo(basex - normalx, basey - normaly);
     ctx.lineTo(x2, y2);
-    ctx.closePath();
     ctx.fill();
 }
 
@@ -193,6 +222,18 @@ function drawArrow(ctx, x1, y1, x2, y2) {
  * at the end of each contour.
  */
 function drawPathWithArrows(ctx, path) {
+    const layers = path._layers;
+    if ( layers && layers.length ) {
+        for ( let l = 0; l < layers.length; l++ ) {
+            drawPathWithArrows(ctx, layers[l]);
+        }
+        return;
+    }
+    const image = path._image;
+    if ( image ) {
+        ctx.drawImage(image.image, image.x, image.y, image.width, image.height);
+        return;
+    }
     var i, cmd, x1, y1, x2, y2;
     var arrows = [];
     ctx.beginPath();
@@ -217,7 +258,9 @@ function drawPathWithArrows(ctx, path) {
             y1 = cmd.y1;
         } else if (cmd.type === 'Z') {
             arrows.push([ctx, x1, y1, x2, y2]);
-            ctx.closePath();
+            if(path.stroke) {
+                ctx.closePath();
+            }
         }
         x2 = cmd.x;
         y2 = cmd.y;
@@ -242,6 +285,7 @@ function displayGlyph(glyphIndex) {
         ctx = canvas.getContext('2d'),
         width = canvas.width / pixelRatio,
         height = canvas.height / pixelRatio;
+    canvas.dataset.glyphIndex = glyphIndex;
     ctx.clearRect(0, 0, width, height);
     if(glyphIndex < 0) return;
     var glyph = window.font.glyphs.get(glyphIndex),
@@ -261,15 +305,15 @@ function displayGlyph(glyphIndex) {
     ctx.fillText(glyph.advanceWidth, xmax, glyphBaseline+markSize+10);
 
     ctx.fillStyle = '#000000';
-    var path = glyph.getPath(x0, glyphBaseline, glyphSize);
+    var path = glyph.getPath(x0, glyphBaseline, glyphSize, options, window.font);
     path.fill = '#808080';
     path.stroke = '#000000';
     path.strokeWidth = 1.5;
     drawPathWithArrows(ctx, path);
-    glyph.drawPoints(ctx, x0, glyphBaseline, glyphSize);
+    glyph.drawPoints(ctx, x0, glyphBaseline, glyphSize, options, window.font);
 }
 
-function renderGlyphItem(canvas, glyphIndex) {
+function renderGlyphItem(canvas, glyphIndex, prefix = '', paletteIndex) {
     var cellMarkSize = 4;
     var ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, cellWidth, cellHeight);
@@ -277,9 +321,9 @@ function renderGlyphItem(canvas, glyphIndex) {
 
     ctx.fillStyle = '#606060';
     ctx.font = '9px sans-serif';
-    ctx.fillText(glyphIndex, 1, cellHeight-1);
+    ctx.fillText(prefix + glyphIndex, 1, cellHeight-1);
     var glyph = window.font.glyphs.get(glyphIndex),
-        glyphWidth = glyph.advanceWidth * fontScale,
+        glyphWidth = (glyph.advanceWidth || 0) * fontScale,
         xmin = (cellWidth - glyphWidth)/2,
         xmax = (cellWidth + glyphWidth)/2,
         x0 = xmin;
@@ -290,8 +334,16 @@ function renderGlyphItem(canvas, glyphIndex) {
     ctx.fillRect(xmax, fontBaseline, cellMarkSize, 1);
     ctx.fillRect(xmax, fontBaseline, 1, cellMarkSize);
 
-    ctx.fillStyle = '#000000';
-    glyph.draw(ctx, x0, fontBaseline, fontSize);
+    const overwriteOptions = Object.assign({},
+        options,
+        { fill: typeof paletteIndex !== 'undefined' ? window.font.palettes.getColor(paletteIndex, window.fontOptions.usePalette) : '#000000' }
+    );
+    
+    if (/(^#ffffff)|(00$)/.test(overwriteOptions.fill)) {
+        overwriteOptions.fill = '#000000';
+    }
+
+    glyph.draw(ctx, x0, fontBaseline, fontSize, overwriteOptions, window.font);
 }
 
 function displayGlyphPage(pageNum) {
@@ -339,8 +391,88 @@ function initGlyphDisplay(font) {
     hline('Typo Descender', font.tables.os2.sTypoDescender);
 }
 
+window.redraw = function(options = { withColors: true, withVariations: true }) {
+    if ( options.withColors ) {
+        updateColrOptions();
+    }
+    if ( options.withVariations ) {
+        updateVariationOptions();
+    }
+    const selectedPage = document.querySelector('.page-selected');
+    const pageIndex = Array.from(selectedPage.parentElement.children).indexOf(selectedPage);    
+    displayGlyphPage(pageIndex);
+    const glyphIndex = document.querySelector('[data-glyph-index]')?.dataset.glyphIndex;
+    if(glyphIndex) {
+        displayGlyph(glyphIndex);
+        displayGlyphData(glyphIndex);
+    }
+}
+
+function updateColrOptions() {
+    const palettes = window.font.palettes.getAll('hexa');
+    const palettesDiv = document.getElementById('palettes');
+    form.drawLayers.checked = window.fontOptions.drawLayers;
+    palettesDiv.innerHTML = '';
+    let markup = '';
+    if ( palettes.length ) {
+        palettes.forEach((palette, idx) => {
+            markup += `<dt><label><input type="radio" name="usePalette[]" oninput="window.fontOptions.usePalette = parseInt(this.value); window.redraw();" value="${idx}" ${idx === window.fontOptions.usePalette ? ' checked' : ''}><strong>↪ Palette ${idx}</strong></label> <button type="button" class="color-swatch" onclick="window.font.palettes.delete(${idx}); redraw();">❌</button></dt><dd><div class="color-swatches">`;
+                palette.forEach((color, colorIndex) => {
+                    markup += `<span class="color-swatch" style="background:${color}" data-palette-index="${idx}" data-color-index="${colorIndex}" data-color="${color}" title="${colorIndex}: ${color}" onclick="showColorPicker(event, this)"></span>`;
+                });
+            markup += `<button type="button" class="color-swatch" onclick="window.font.palettes.extend(1); redraw();">+</button></div></dd>`;
+        });
+    }
+    markup += '<p><button type="button" onclick="font.palettes.add(); redraw();">+</button></p>';
+    palettesDiv.innerHTML = markup;
+
+    document.getElementById('colr-cpal-options').style.display = window.font.tables.cpal ? 'block' : 'none';
+}
+
+window.showColorPicker = (event, el) => {
+    if(event.target !== el) return;
+    document.querySelectorAll('#palettes .color-swatch dialog').forEach(e => e.remove());
+    const dialog = document.createElement('dialog');
+    dialog.innerHTML = `<div>RGB: <input type="color" value="${el.dataset.color.substring(0,7)}"> A: <input type="number" value="${(parseInt(el.dataset.color.slice(-2), 16) / 255).toFixed(2)}" step="0.01" min="0" max="1"></div>`;
+    dialog.style.marginLeft = `${el.offsetLeft}px`;
+    dialog.style.marginTop = `${el.offsetTop + el.offsetHeight + 5}px`;
+    el.append(dialog);
+    dialog.showModal();
+    dialog.addEventListener('click', ev => {
+        if (ev.target === dialog) {
+            dialog.close();
+        }
+    });
+    const picker = dialog.querySelector('input[type="color"]');
+    const alphaPicker = dialog.querySelector('input[type="number"]');
+    const colorChangeHandler = throttleDebounce( () => {
+        const newColor = picker.value + ('0' + Math.round(alphaPicker.value * 255).toString(16)).slice(-2);
+        el.style.background = newColor;
+        el.dataset.color = newColor;
+        el.title = `${el.dataset.colorIndex}: ${newColor}`;
+        window.font.palettes.setColor(el.dataset.colorIndex, newColor, el.dataset.paletteIndex);
+        const glyphIndex = document.querySelector('[data-glyph-index]')?.dataset.glyphIndex;
+        redraw(false);
+    }, 50);
+
+    picker.addEventListener('input', colorChangeHandler);
+    alphaPicker.addEventListener('input', colorChangeHandler);
+};
+
+window.throttledRedraw = throttleDebounce((...args) => {
+    window.redraw(...args);
+}, 50);
+
 function onFontLoaded(font) {
+    if (window.font) {
+        window.font.onGlyphUpdated = null
+    }
     window.font = font;
+    options = Object.assign({}, window.font.defaultRenderOptions);
+    window.fontOptions = options;
+
+    updateColrOptions();
+    updateVariationOptions();
 
     var w = cellWidth - cellMarginLeftRight * 2,
         h = cellHeight - cellMarginTop - cellMarginBottom,
@@ -371,6 +503,13 @@ function onFontLoaded(font) {
     displayGlyphPage(0);
     displayGlyph(-1);
     displayGlyphData(-1);
+
+    font.onGlyphUpdated = (glyphId) => {
+        const firstGlyph = pageSelected * cellCount;
+        if (firstGlyph <= glyphId && glyphId < firstGlyph + cellCount) {
+            renderGlyphItem(document.getElementById('g'+(glyphId - firstGlyph)), glyphId);
+        }
+    };
 }
 
 function cellSelect(event) {
@@ -394,6 +533,8 @@ function prepareGlyphList() {
         canvas.className = 'item';
         canvas.id = 'g'+i;
         canvas.addEventListener('click', cellSelect, false);
+        canvas.addEventListener('keypress', (ev) => ev.keyCode === 13 && cellSelect(ev) , false);
+        canvas.tabIndex = 0;
         enableHighDPICanvas(canvas);
         parent.insertBefore(canvas, marker);
     }
@@ -410,10 +551,20 @@ async function display(file, name) {
     }
     try {
         const data = await file.arrayBuffer();
-        onFontLoaded(opentype.parse(isWoff2 ? Module.decompress(data) : data));
-        showErrorMessage('');
+        let error;
+        try {
+            const base64String = arrayBufferToBase64(data);
+            sessionStorage.setItem('fontData', base64String);
+        } catch (err) {
+            showErrorMessage('Error loading font from localStorage');
+            error = err;
+        }     
+
+        onFontLoaded(opentype.parse(isWoff2 ? Module.decompress(data) : data, { lowMemory: true }));
+        if ( !error ) showErrorMessage('');
     } catch (err) {
         showErrorMessage(err.toString());
+        throw err;
     }
 }
 
@@ -426,8 +577,15 @@ enableHighDPICanvas('glyph');
 
 prepareGlyphList();
 
-const fontFileName = 'fonts/FiraSansMedium.woff';
-display(await fetch(fontFileName), fontFileName);
+const fontData = sessionStorage.getItem('fontData');
+if ( fontData ) {
+    const arrayBuffer = base64ToArrayBuffer(fontData);
+    onFontLoaded(opentype.parse(arrayBuffer));
+} else {
+    const fontFileName = 'fonts/FiraSansMedium.woff';
+    display(await fetch(fontFileName), fontFileName);
+}
+
 </script>
 </body>
 </html>

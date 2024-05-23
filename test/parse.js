@@ -3,6 +3,14 @@ import { unhex } from './testutil.js';
 import { Parser } from '../src/parse.js';
 
 describe('parse.js', function() {
+    // interpret hex as signed integer
+    const signed = hex => {
+        const bitLength = hex.toString(16).length * 4;
+        const mask = 1 << (bitLength - 1);
+        const maxUnsigned = (1 << bitLength) - 1;
+        return (hex & mask) ? -(~hex & maxUnsigned) - 1 : hex;
+    };    
+
     describe('parseUShortList', function() {
         it('can parse an empty list', function() {
             const p = new Parser(unhex('0000'), 0);
@@ -374,20 +382,36 @@ describe('parse.js', function() {
 
     describe('parseDeltaSets', function() {
         it('should parse DeltaSets without the LONG_WORDS flag', function() {
-            const data = '0123 4567 891A BCDE FADE C0FF EEEE';
+            const data = '0123 4567 891A BCDE FADE C0FF EE0F DEAD BEEF BADA 55DE CADE';
             const p = new Parser(unhex(data), 0);
-            assert.deepEqual(p.parseDeltaSets(4, 0x0000), [ 0x01, 0x23, 0x45, 0x67 ]);
-            assert.deepEqual(p.parseDeltaSets(3, 0x0001), [ 0x891A, 0xBC, 0xDE ]);
-            assert.deepEqual(p.parseDeltaSets(3, 0x0002), [ 0xFADE, 0xC0FF, 0xEE]);
+            assert.deepEqual(p.parseDeltaSets(4, 0x0000, 2), [
+                [0x01, 0x23], [0x45, 0x67], [0x89, 0x1A], [0xBC, 0xDE]
+            ].map(x => x.map(signed)));
+            assert.deepEqual(p.parseDeltaSets(4, 0x0001, 3), [
+                [0xFADE, 0xC0, 0xFF], [0xEE0F, 0xDE, 0xAD],
+                [0xBEEF, 0xBA, 0xDA], [0x55DE, 0xCA, 0xDE]
+            ].map(x => x.map(signed)));
+            p.relativeOffset = 0;
+            assert.deepEqual(p.parseDeltaSets(4, 0x0002, 4), [
+                [0x0123, 0x4567, 0x89, 0x1A], [0xBCDE, 0xFADE, 0xC0, 0xFF],
+                [0xEE0F, 0xDEAD, 0xBE, 0xEF], [0xBADA, 0x55DE, 0xCA, 0xDE],
+            ].map(x => x.map(signed)));
         });
 
         it('should parse DeltaSets with the LONG_WORDS flag', function() {
-            const data = '0123 4567 891A BCDE FADE C0FF EEEE BA5E';
+            const data = '0123 4567 891A BCDE FADE C0FF EEEE BA5E DEAD BEEF DEFA CE0F BADA 55E5 0011 2233 2211 2233 2211';
             const p = new Parser(unhex(data), 0);
-            assert.deepEqual(p.parseDeltaSets(4, 0x8000), [ 0x0123, 0x4567, 0x891A, 0xBCDE ]);
-            assert.deepEqual(p.parseDeltaSets(3, 0x8001), [ 0xFADEC0FF, 0xEEEE, 0xBA5E ]);
-            p.relativeOffset = 8;
-            assert.deepEqual(p.parseDeltaSets(2, 0x8002), [ 0xFADEC0FF, 0xEEEEBA5E ]);
+            assert.deepEqual(p.parseDeltaSets(4, 0x8000, 2), [
+                [0x0123, 0x4567], [0x891A, 0xBCDE], [0xFADE, 0xC0FF], [0xEEEE, 0xBA5E]
+            ].map(x => x.map(signed)));
+            p.relativeOffset = 0;
+            assert.deepEqual(p.parseDeltaSets(1, 0x8001, 3), [
+                [0x01234567, 0x891A, 0xBCDE ],
+            ].map(x => x.map(signed)));
+            p.relativeOffset = 28;
+            assert.deepEqual(p.parseDeltaSets(1, 0x8002, 3), [
+                [0x00112233, 0x22112233, 0x2211],
+            ].map(x => x.map(signed)));
         });
     });
 
@@ -433,6 +457,37 @@ describe('parse.js', function() {
             assert.equal(new Date(p1.parseLongDateTime() * 1000).getTime(), date1);
             assert.equal(new Date(p2.parseLongDateTime() * 1000).getTime(), date2);
             assert.equal(new Date(p3.parseLongDateTime() * 1000).getTime(), date3);
+        });
+    });
+
+    describe('font variation data', function() {
+        it('should parse packed point numbers', function() {
+            let p = new Parser(unhex('00'), 0);
+            assert.deepEqual(p.parsePackedPointNumbers(), []);
+            p = new Parser(unhex('32 18' + ' 01'.repeat(25) + '18' + ' 05'.repeat(25)), 0);
+            assert.deepEqual(p.parsePackedPointNumbers(), [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+                30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150
+            ]);
+            p = new Parser(unhex(
+                '81 22 02 04 01 03 ff' + ' 00 01'.repeat(128) +
+                '7f' + ' 01'.repeat(128) +
+                '1e' + ' 02'.repeat(31)
+            ), 0);
+            assert.deepEqual(p.parsePackedPointNumbers(), [
+                4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+                36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64,
+                65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93,
+                94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
+                118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140,
+                141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163,
+                164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186,
+                187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209,
+                210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232,
+                233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255,
+                256, 257, 258, 259, 260, 261, 262, 263, 264, 266, 268, 270, 272, 274, 276, 278, 280, 282, 284, 286, 288, 290, 292,
+                294, 296, 298, 300, 302, 304, 306, 308, 310, 312, 314, 316, 318, 320, 322, 324, 326
+            ]);
         });
     });
 });

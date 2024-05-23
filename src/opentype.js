@@ -18,7 +18,9 @@ import cff from './tables/cff.js';
 import stat from './tables/stat.js';
 import fvar from './tables/fvar.js';
 import gvar from './tables/gvar.js';
+import cvar from './tables/cvar.js';
 import avar from './tables/avar.js';
+import hvar from './tables/hvar.js';
 import glyf from './tables/glyf.js';
 import gdef from './tables/gdef.js';
 import gpos from './tables/gpos.js';
@@ -35,6 +37,8 @@ import os2 from './tables/os2.js';
 import post from './tables/post.js';
 import meta from './tables/meta.js';
 import gasp from './tables/gasp.js';
+import svg from './tables/svg.js';
+import { PaletteManager } from './palettes.js';
 /**
  * The opentype library.
  * @namespace opentype
@@ -266,12 +270,14 @@ function parseBuffer(buffer, opt={}) {
     let fvarTableEntry;
     let statTableEntry;
     let gvarTableEntry;
+    let cvarTableEntry;
     let avarTableEntry;
     let glyfTableEntry;
     let gdefTableEntry;
     let gposTableEntry;
     let gsubTableEntry;
     let hmtxTableEntry;
+    let hvarTableEntry;
     let kernTableEntry;
     let locaTableEntry;
     let nameTableEntry;
@@ -304,6 +310,9 @@ function parseBuffer(buffer, opt={}) {
             case 'gvar':
                 gvarTableEntry = tableEntry;
                 break;
+            case 'cvar':
+                cvarTableEntry = tableEntry;
+                break;
             case 'fpgm' :
                 table = uncompressTable(data, tableEntry);
                 p = new parse.Parser(table.data, table.offset);
@@ -321,6 +330,9 @@ function parseBuffer(buffer, opt={}) {
                 font.ascender = font.tables.hhea.ascender;
                 font.descender = font.tables.hhea.descender;
                 font.numberOfHMetrics = font.tables.hhea.numberOfHMetrics;
+                break;
+            case 'HVAR':
+                hvarTableEntry = tableEntry;
                 break;
             case 'hmtx':
                 hmtxTableEntry = tableEntry;
@@ -390,6 +402,13 @@ function parseBuffer(buffer, opt={}) {
                 table = uncompressTable(data, tableEntry);
                 font.tables.gasp = gasp.parse(table.data, table.offset);
                 break;
+            case 'SVG ':
+                table = uncompressTable(data, tableEntry);
+                font.tables.svg = svg.parse(table.data, table.offset);
+                break;
+            default:
+                // console.info(`Skipping unsupported table ${tableEntry.tag}`);
+                break;
         }
     }
 
@@ -458,7 +477,21 @@ function parseBuffer(buffer, opt={}) {
             console.warn('This font provides a gvar table, but no glyf table. Glyph variation only works with TrueType outlines.');
         }
         const gvarTable = uncompressTable(data, gvarTableEntry);
-        font.tables.gvar = gvar.parse(gvarTable.data, gvarTable.offset, font.names);
+        font.tables.gvar = gvar.parse(gvarTable.data, gvarTable.offset, font.tables.fvar, font.glyphs);
+    }
+
+    if (cvarTableEntry) {
+        if (!fvarTableEntry) {
+            console.warn('This font provides a cvar table, but no fvar table, which is required for variable fonts.');
+        }
+        if (!font.tables.cvt) {
+            console.warn('This font provides a cvar table, but no cvt table which could be made variable.');
+        }
+        if (!glyfTableEntry) {
+            console.warn('This font provides a gvar table, but no glyf table. Glyph variation only works with TrueType outlines.');
+        }
+        const cvarTable = uncompressTable(data, cvarTableEntry);
+        font.tables.cvar = cvar.parse(cvarTable.data, cvarTable.offset, font.tables.fvar, font.tables.cvt || []);
     }
 
     if (avarTableEntry) {
@@ -469,11 +502,26 @@ function parseBuffer(buffer, opt={}) {
         font.tables.avar = avar.parse(avarTable.data, avarTable.offset, font.tables.fvar);
     }
 
+    if (hvarTableEntry) {
+        if (!fvarTableEntry) {
+            console.warn('This font provides an HVAR table, but no fvar table, which is required for variable fonts.');
+        }
+
+        if (!hmtxTableEntry) {
+            console.warn('This font provides an HVAR table, but no hmtx table to vary.');
+        }
+
+        const hvarTable = uncompressTable(data, hvarTableEntry);
+        font.tables.hvar = hvar.parse(hvarTable.data, hvarTable.offset, font.tables.fvar);
+    }
+
     if (metaTableEntry) {
         const metaTable = uncompressTable(data, metaTableEntry);
         font.tables.meta = meta.parse(metaTable.data, metaTable.offset);
         font.metas = font.tables.meta;
     }
+    
+    font.palettes = new PaletteManager(font);
 
     return font;
 }

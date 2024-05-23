@@ -6,6 +6,10 @@ import { DefaultEncoding } from './encoding.js';
 import glyphset from './glyphset.js';
 import Position from './position.js';
 import Substitution from './substitution.js';
+import { PaletteManager } from './palettes.js';
+import { LayerManager } from './layers.js';
+import { SVGImageManager } from './svgimages.js';
+import { VariationManager } from './variation.js';
 import { isBrowser, checkArgument } from './util.js';
 import HintingTrueType from './hintingtt.js';
 import Bidi from './bidi.js';
@@ -139,6 +143,20 @@ function Font(options) {
     this.position = new Position(this);
     this.substitution = new Substitution(this);
     this.tables = this.tables || {};
+
+    this.tables = new Proxy(this.tables, {
+        set: (tables, tableName, tableData) => {
+            tables[tableName] = tableData;
+            if (tables.fvar && (tables.gvar || tables.cff2) && !this.variation) {
+                this.variation = new VariationManager(this);
+            }
+            return true;
+        }
+    });
+
+    this.palettes = new PaletteManager(this);
+    this.layers = new LayerManager(this);
+    this.svgImages = new SVGImageManager(this);
 
     // needed for low memory mode only.
     this._push = null;
@@ -329,6 +347,10 @@ Font.prototype.getKerningValue = function (leftGlyph, rightGlyph) {
  * @property {boolean} [kerning=true] - whether to include kerning values
  * @property {object} [features] - OpenType Layout feature tags. Used to enable or disable the features of the given script/language system.
  *                                 See https://www.microsoft.com/typography/otspec/featuretags.htm
+ * @property {boolean} [hinting=false] - whether to apply font hinting to the outlines
+ * @property {integer} [usePalette=0] For COLR/CPAL fonts, the zero-based index of the color palette to use. (Use `Font.palettes.get()` to get the available palettes)
+ * @property {boolean} [drawLayers=true] For COLR/CPAL fonts, this can be turned to false in order to draw the fallback glyphs instead
+ * @property {boolean} [drawSVG=true] For SVG fonts, this can be turned to false in order to draw the fallback glyphs instead
  */
 Font.prototype.defaultRenderOptions = {
     kerning: true,
@@ -341,7 +363,11 @@ Font.prototype.defaultRenderOptions = {
         { script: 'latn', tags: ['liga', 'rlig'] },
         { script: 'thai', tags: ['liga', 'rlig', 'ccmp'] },
         { script: 'DFLT', tags: ['mark'] },
-    ]
+    ],
+    hinting: false,
+    usePalette: 0,
+    drawLayers: true,
+    drawSVG: true,
 };
 
 /**
@@ -459,14 +485,26 @@ Font.prototype.getGlyphsPositions = function (glyphs, options) {
  * @return {opentype.Path}
  */
 Font.prototype.getPath = function (text, x, y, fontSize, options) {
+    options = Object.assign({}, this.defaultRenderOptions, options);
     const fullPath = new Path();
+    fullPath._layers = [];
     applyPaintType(this, fullPath, fontSize);
     if (fullPath.stroke) {
         const scale = 1 / (fullPath.unitsPerEm || 1000) * fontSize;
         fullPath.strokeWidth *= scale;
     }
-    this.forEachGlyph(text, x, y, fontSize, options, function (glyph, gX, gY, gFontSize) {
+    this.forEachGlyph(text, x, y, fontSize, options,  (glyph, gX, gY, gFontSize) => {
         const glyphPath = glyph.getPath(gX, gY, gFontSize, options, this);
+        if ( options.drawSVG || options.drawLayers ) {
+            const layers = glyphPath._layers;
+            if ( layers && layers.length ) {
+                for(let l = 0; l < layers.length; l++) {
+                    const layer = layers[l];
+                    fullPath._layers.push(layer);
+                }
+                return;
+            }
+        }
         fullPath.extend(glyphPath);
     });
     return fullPath;
@@ -482,6 +520,7 @@ Font.prototype.getPath = function (text, x, y, fontSize, options) {
  * @return {opentype.Path[]}
  */
 Font.prototype.getPaths = function (text, x, y, fontSize, options) {
+    options = Object.assign({}, this.defaultRenderOptions, options);
     const glyphPaths = [];
     this.forEachGlyph(text, x, y, fontSize, options, function (glyph, gX, gY, gFontSize) {
         const glyphPath = glyph.getPath(gX, gY, gFontSize, options, this);
@@ -507,6 +546,7 @@ Font.prototype.getPaths = function (text, x, y, fontSize, options) {
  * @return advance width
  */
 Font.prototype.getAdvanceWidth = function (text, fontSize, options) {
+    options = Object.assign({}, this.defaultRenderOptions, options);
     return this.forEachGlyph(text, 0, 0, fontSize, options, function () { });
 };
 
@@ -520,7 +560,8 @@ Font.prototype.getAdvanceWidth = function (text, fontSize, options) {
  * @param  {GlyphRenderOptions=} options
  */
 Font.prototype.draw = function (ctx, text, x, y, fontSize, options) {
-    this.getPath(text, x, y, fontSize, options).draw(ctx);
+    const path = this.getPath(text, x, y, fontSize, options);
+    path.draw(ctx);
 };
 
 /**
@@ -534,8 +575,9 @@ Font.prototype.draw = function (ctx, text, x, y, fontSize, options) {
  * @param {GlyphRenderOptions=} options
  */
 Font.prototype.drawPoints = function (ctx, text, x, y, fontSize, options) {
+    options = Object.assign({}, this.defaultRenderOptions, options);
     this.forEachGlyph(text, x, y, fontSize, options, function (glyph, gX, gY, gFontSize) {
-        glyph.drawPoints(ctx, gX, gY, gFontSize);
+        glyph.drawPoints(ctx, gX, gY, gFontSize, options, this);
     });
 };
 
@@ -552,6 +594,7 @@ Font.prototype.drawPoints = function (ctx, text, x, y, fontSize, options) {
  * @param {GlyphRenderOptions=} options
  */
 Font.prototype.drawMetrics = function (ctx, text, x, y, fontSize, options) {
+    options = Object.assign({}, this.defaultRenderOptions, options);
     this.forEachGlyph(text, x, y, fontSize, options, function (glyph, gX, gY, gFontSize) {
         glyph.drawMetrics(ctx, gX, gY, gFontSize);
     });
@@ -577,6 +620,7 @@ Font.prototype.validate = function () {
 
     function assert(predicate, message) {
         if (!predicate) {
+            console.warn(`[opentype.js] ${message}`);
             warnings.push(message);
         }
     }
@@ -596,6 +640,21 @@ Font.prototype.validate = function () {
 
     // Dimension information
     assert(this.unitsPerEm > 0, 'No unitsPerEm specified.');
+
+    if (this.tables.colr) {
+        const baseGlyphs = this.tables.colr.baseGlyphRecords;
+        let previousID = -1;
+        for(let b = 0; b < baseGlyphs.length; b++) {
+            const currentGlyphID = baseGlyphs[b].glyphID;
+            assert(previousID < baseGlyphs[b].glyphID, `baseGlyphs must be sorted by GlyphID in ascending order, but glyphID ${currentGlyphID} comes after ${previousID}`);
+            if (previousID > baseGlyphs[b].glyphID) {
+                break;
+            }
+            previousID = currentGlyphID;
+        }
+    }
+
+    return warnings;
 };
 
 /**
