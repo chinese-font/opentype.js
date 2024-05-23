@@ -5,7 +5,6 @@
         "name": "Frederik De Bleser",
         "email": "frederik@debleser.be"
     },
-    "type": "module",
     "keywords": [
         "graphics",
         "fonts",
@@ -37,9 +36,10 @@
         "d:esm": "esbuild --bundle src/opentype.js --outdir=dist --external:fs --external:http --external:https --target=es2018 --format=esm  --out-extension:.js=.module.min.js --minify --sourcemap"
     },
     "devDependencies": {
-        "mocha": "^8.4.0",
         "esbuild": "^0.20.0",
         "eslint": "^8.53.0",
+        "eslint-plugin-local-rules": "^2.0.1",
+        "mocha": "^8.4.0",
         "reify": "^0.20.12"
     },
     "bin": {
@@ -87,8 +87,5 @@
             "local-rules/ban-foreach": 2,
             "local-rules/import-extensions": 2
         }
-    },
-    "dependencies": {
-        "eslint-plugin-local-rules": "^2.0.1"
     }
 }
