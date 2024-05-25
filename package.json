@@ -15,6 +15,7 @@
         "woff",
         "type"
     ],
+    "type": "module",
     "license": "MIT",
     "repository": {
         "type": "git",
